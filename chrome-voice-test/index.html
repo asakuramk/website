@@ -24,7 +24,6 @@ let recognition=null,stream=null,ctx=null,analyser=null,raf=0,restartTimer=0,rec
 let running=false,committed='',interim='',session=0,restarts=0,recognizerGeneration=0,lastEventAt=0,lastVoiceAt=0,lastResultAt=0,lastRestartAt=0,recognitionStartedAt=0,lastSpeechStartAt=0,watchdog=0,voiceLevel=0,finalCount=0,recoveryCount=0,lastError='なし',recordingType='';
 const canvas=$('wave'),g=canvas.getContext('2d'),history=new Float32Array(canvas.width);
 function status(s){$('status').textContent=s}
-const isiOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 const needsIOSRestart=isiOS;
 if(!SR){status('このブラウザには音声認識APIがありません。SafariまたはChromeの最新版で試してください。');$('start').disabled=true}
 if(!navigator.mediaDevices?.getUserMedia){status('マイクAPIが利用できません。HTTPSとブラウザのマイク許可を確認してください。');$('start').disabled=true}
