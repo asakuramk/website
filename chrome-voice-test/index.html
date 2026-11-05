@@ -1,17 +1,17 @@
 <!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>日本語音声認識テスト v2</title>
+<title>日本語音声認識テスト v3</title>
 <style>
 body{font-family:system-ui,sans-serif;max-width:850px;margin:24px auto;padding:18px;line-height:1.6;color:#20242b}
 button{font-size:17px;padding:11px;margin:4px;border-radius:8px;border:1px solid #aaa;background:white;cursor:pointer}
 button:disabled{opacity:.45}canvas{width:100%;height:150px;background:#101b2a;border-radius:12px;display:block}
 textarea{box-sizing:border-box;width:100%;height:270px;font-size:18px;padding:12px}
-#status{min-height:2em}#interim{color:#666;min-height:2em;white-space:pre-wrap}
+#diagnostics{font-size:14px;white-space:pre-wrap;background:#f3f5f7;padding:10px;border-radius:8px}#status{min-height:2em}#interim{color:#666;min-height:2em;white-space:pre-wrap}
 </style></head><body>
-<h1>日本語音声認識テスト <small id="version">v2</small></h1><p>バージョン: v2（波形スクロール・認識自動再開）</p>
+<h1>日本語音声認識テスト <small id="version">v3</small></h1><p>バージョン: v3（波形スクロール・認識自動再開）</p>
 <p>Windows 10 / 11 の Chrome 用。日本語（ja-JP）固定。患者情報は入力しないでください。Chrome の音声認識は外部サービスへ音声を送信する場合があります。</p>
 <button id="start">録音開始</button><button id="stop" disabled>停止</button><button id="copy">全文コピー</button>
-<p id="status" role="status">待機中</p>
+<p id="status" role="status">待機中</p><p id="diagnostics" aria-live="off">認識診断: 待機中</p>
 <label for="wave">マイク波形（右から左へスクロール）</label><canvas id="wave" width="900" height="150" aria-label="音声入力のスクロール波形"></canvas>
 <h2>文字起こし</h2><textarea id="output" aria-label="確定した文字起こし結果"></textarea>
 <div id="interim" aria-live="off"></div>
@@ -20,47 +20,63 @@ textarea{box-sizing:border-box;width:100%;height:270px;font-size:18px;padding:12
 const $=id=>document.getElementById(id);
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 let recognition=null,stream=null,ctx=null,analyser=null,raf=0,restartTimer=0;
-let running=false,committed='',interim='',session=0,restarts=0;
+let running=false,committed='',interim='',session=0,restarts=0,recognizerGeneration=0,lastEventAt=0,lastVoiceAt=0,watchdog=0,voiceLevel=0,finalCount=0,recoveryCount=0,lastError='なし';
 const canvas=$('wave'),g=canvas.getContext('2d'),history=new Float32Array(canvas.width);
 function status(s){$('status').textContent=s}
+function showDiagnostics(){const elapsed=lastEventAt?Math.round((Date.now()-lastEventAt)/1000)+'秒':'なし';$('diagnostics').textContent='認識診断: '+(running?'稼働中':'停止中')+' / 確定結果 '+finalCount+'件 / 再接続 '+recoveryCount+'回 / 最終イベント '+elapsed+'前 / 最終エラー '+lastError}
+
 function draw(){
  if(!analyser)return;
  const data=new Uint8Array(analyser.fftSize);analyser.getByteTimeDomainData(data);
  let power=0;for(const v of data){const x=(v-128)/128;power+=x*x}
- const amplitude=Math.min(1,Math.sqrt(power/data.length)*4);
+ const amplitude=Math.min(1,Math.sqrt(power/data.length)*4);voiceLevel=amplitude;if(amplitude>0.12)lastVoiceAt=Date.now();
  history.copyWithin(0,2);history[history.length-2]=amplitude;history[history.length-1]=amplitude;
  g.fillStyle='#101b2a';g.fillRect(0,0,canvas.width,canvas.height);
  g.strokeStyle='#51e3bb';g.lineWidth=2;g.beginPath();
  for(let x=0;x<history.length;x++){const h=history[x]*canvas.height*.45;g.moveTo(x,canvas.height/2-h);g.lineTo(x,canvas.height/2+h)}
  g.stroke();raf=requestAnimationFrame(draw);
 }
-function appendFinal(t){if(!t)return;committed+=(committed&&!committed.endsWith('\n')?'\n':'')+t.trim()+'\n';$('output').value=committed;$('output').scrollTop=$('output').scrollHeight}
-function scheduleRestart(id){if(!running||id!==session)return;clearTimeout(restartTimer);const delay=Math.min(3000,400*Math.pow(1.5,Math.min(restarts++,5)));restartTimer=setTimeout(()=>{if(running&&id===session)beginRecognition(id)},delay)}
+function appendFinal(t){if(!t)return;finalCount++;showDiagnostics();committed+=(committed&&!committed.endsWith('\n')?'\n':'')+t.trim()+'\n';$('output').value=committed;$('output').scrollTop=$('output').scrollHeight}
+function scheduleRestart(id){if(!running||id!==session)return;recoveryCount++;showDiagnostics();clearTimeout(restartTimer);const delay=Math.min(3000,400*Math.pow(1.5,Math.min(restarts++,5)));restartTimer=setTimeout(()=>{restartTimer=0;if(running&&id===session)beginRecognition(id)},delay)}
 function beginRecognition(id){
  if(!running||id!==session)return;
- const r=new SR();recognition=r;r.lang='ja-JP';r.continuous=true;r.interimResults=true;r.maxAlternatives=1;
+ const r=new SR();recognition=r;const generation=++recognizerGeneration;lastEventAt=Date.now();r.lang='ja-JP';r.continuous=true;r.interimResults=true;r.maxAlternatives=1;
+ r.onstart=()=>{if(id===session&&generation===recognizerGeneration){lastEventAt=Date.now();status('録音中・日本語を認識しています')}};
+ r.onspeechstart=()=>{if(id===session&&generation===recognizerGeneration)lastEventAt=Date.now()};
  r.onresult=e=>{
-  if(id!==session||!running)return;
+  if(id!==session||!running||generation!==recognizerGeneration)return;
+  lastEventAt=Date.now();
   let pending='',finals=[];
   for(let i=e.resultIndex;i<e.results.length;i++){const item=e.results[i],t=item[0].transcript;if(item.isFinal)finals.push(t);else pending+=t}
   finals.forEach(appendFinal);interim=pending;$('interim').textContent=interim?'認識中: '+interim:'';
   if(finals.length)restarts=0;
  };
  r.onerror=e=>{
-  if(id!==session)return;
+  if(id!==session||generation!==recognizerGeneration)return;
+  lastEventAt=Date.now();lastError=e.error;showDiagnostics();
   if(e.error==='not-allowed'||e.error==='service-not-allowed'){status('マイクまたは音声認識の許可がありません');stopAll();return}
   if(e.error==='audio-capture'){status('マイク入力を確認してください');stopAll();return}
   if(e.error!=='no-speech'&&e.error!=='aborted')status('認識エラー: '+e.error+'（再接続を試行）');
  };
- r.onend=()=>{if(id!==session)return;recognition=null;if(interim){$('interim').textContent='未確定（再認識中）: '+interim;interim=''}scheduleRestart(id)};
- try{r.start();status('録音中・日本語を認識しています')}catch(e){status('音声認識を再試行中: '+e.message);scheduleRestart(id)}
+ r.onend=()=>{if(id!==session||generation!==recognizerGeneration)return;lastEventAt=Date.now();recognition=null;if(interim){$('interim').textContent='未確定（再認識中）: '+interim;interim=''}status('音声認識が終了しました。再接続中…');scheduleRestart(id)};
+ try{r.start();status('録音中・日本語を認識しています')}catch(e){if(generation!==recognizerGeneration)return;recognition=null;status('音声認識を再試行中: '+e.message);scheduleRestart(id)}
+}
+function checkRecognition(id){
+ if(!running||id!==session)return;
+ showDiagnostics();
+ if(recognition&&Date.now()-lastEventAt>20000&&Date.now()-lastVoiceAt<12000){
+  const stale=recognition;recognition=null;recognizerGeneration++;
+  status('音声認識の応答がありません。再接続中…');
+  try{stale.abort()}catch(e){}
+  scheduleRestart(id);
+ }else if(!recognition&&!restartTimer){scheduleRestart(id)}
 }
 async function stopAll(){
- running=false;session++;clearTimeout(restartTimer);cancelAnimationFrame(raf);
+ running=false;session++;recognizerGeneration++;clearTimeout(restartTimer);clearInterval(watchdog);watchdog=0;cancelAnimationFrame(raf);
  if(recognition){const r=recognition;recognition=null;try{r.stop()}catch(e){}}
  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
  if(ctx){const old=ctx;ctx=null;try{await old.close()}catch(e){}}
- analyser=null;$('start').disabled=false;$('stop').disabled=true;
+ analyser=null;showDiagnostics();$('start').disabled=false;$('stop').disabled=true;
  $('interim').textContent=interim?'未確定の音声: '+interim:'';interim='';
 }
 $('start').onclick=async()=>{
@@ -71,8 +87,8 @@ $('start').onclick=async()=>{
   ctx=new (window.AudioContext||window.webkitAudioContext)();await ctx.resume();
   analyser=ctx.createAnalyser();analyser.fftSize=2048;
   ctx.createMediaStreamSource(stream).connect(analyser);
-  history.fill(0);committed=$('output').value;interim='';restarts=0;running=true;session++;
-  $('start').disabled=true;$('stop').disabled=false;draw();beginRecognition(session);
+  history.fill(0);committed=$('output').value;interim='';restarts=0;finalCount=0;recoveryCount=0;lastError='なし';lastVoiceAt=0;running=true;session++;
+  $('start').disabled=true;$('stop').disabled=false;draw();beginRecognition(session);const activeSession=session;watchdog=setInterval(()=>checkRecognition(activeSession),5000);
  }catch(e){status('マイクを開始できません: '+e.message);await stopAll()}
 };
 $('stop').onclick=async()=>{await stopAll();status('停止しました')};
