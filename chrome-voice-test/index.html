@@ -42,10 +42,10 @@ function beginRecognition(id){
  if(!running||id!==session)return;
  const r=new SR();recognition=r;const generation=++recognizerGeneration;lastEventAt=Date.now();recognitionStartedAt=Date.now();lastResultAt=Date.now();r.lang='ja-JP';r.continuous=true;r.interimResults=true;r.maxAlternatives=1;
  r.onstart=()=>{if(id===session&&generation===recognizerGeneration){lastEventAt=Date.now();status('録音中・日本語を認識しています')}};
- r.onspeechstart=()=>{if(id===session&&generation===recognizerGeneration)lastEventAt=Date.now()};
+ r.onspeechstart=()=>{if(id===session&&generation===recognizerGeneration){lastEventAt=Date.now();lastSpeechStartAt=Date.now()}};
  r.onresult=e=>{
   if(id!==session||!running||generation!==recognizerGeneration)return;
-  lastEventAt=Date.now();lastResultAt=Date.now();
+  lastEventAt=Date.now();lastResultAt=Date.now();lastSpeechStartAt=0;
   let pending='',finals=[];
   for(let i=e.resultIndex;i<e.results.length;i++){const item=e.results[i],t=item[0].transcript;if(item.isFinal)finals.push(t);else pending+=t}
   finals.forEach(appendFinal);interim=pending;$('interim').textContent=interim?'認識中: '+interim:'';
@@ -54,8 +54,8 @@ function beginRecognition(id){
  r.onerror=e=>{
   if(id!==session||generation!==recognizerGeneration)return;
   lastEventAt=Date.now();lastError=e.error;showDiagnostics();
-  if(e.error==='not-allowed'||e.error==='service-not-allowed'){status('マイクまたは音声認識の許可がありません');stopAll();return}
-  if(e.error==='audio-capture'){status('マイク入力を確認してください');stopAll();return}
+  if(e.error==='not-allowed'||e.error==='service-not-allowed'){stopAll().then(()=>status('マイクまたは音声認識の許可がありません'));return}
+  if(e.error==='audio-capture'){stopAll().then(()=>status('マイク入力を確認してください'));return}
   if(e.error!=='no-speech'&&e.error!=='aborted')status('認識エラー: '+e.error+'（再接続を試行）');
  };
  r.onend=()=>{if(id!==session||generation!==recognizerGeneration)return;lastEventAt=Date.now();recognition=null;if(interim){$('interim').textContent='未確定（再認識中）: '+interim;interim=''}status('音声認識が終了しました。再接続中…');scheduleRestart(id)};
@@ -94,8 +94,8 @@ $('start').onclick=async()=>{
   analyser=ctx.createAnalyser();analyser.fftSize=2048;
   ctx.createMediaStreamSource(stream).connect(analyser);
   audioChunks=[];audioBlob=null;$('download').disabled=true;
-  if(window.MediaRecorder){const format=['audio/webm;codecs=opus','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t));recorder=new MediaRecorder(stream,format?{mimeType:format}:undefined);recorder.ondataavailable=e=>{if(e.data.size)audioChunks.push(e.data)};recorder.onstop=()=>{audioBlob=new Blob(audioChunks,{type:recorder?.mimeType||'audio/webm'});$('download').disabled=!audioBlob.size};recorder.start(1000)}
-  history.fill(0);committed=$('output').value;interim='';restarts=0;finalCount=0;recoveryCount=0;lastError='なし';lastVoiceAt=0;lastResultAt=Date.now();lastRestartAt=0;running=true;session++;
+  if(window.MediaRecorder){const format=['audio/webm;codecs=opus','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t));recorder=new MediaRecorder(stream,format?{mimeType:format}:undefined);recorder.ondataavailable=e=>{if(e.data.size)audioChunks.push(e.data)};const recordingType=recorder.mimeType;recorder.onstop=()=>{audioBlob=new Blob(audioChunks,{type:recordingType||'audio/webm'});$('download').disabled=!audioBlob.size};recorder.start(1000)}
+  history.fill(0);committed=$('output').value;interim='';restarts=0;finalCount=0;recoveryCount=0;lastError='なし';lastVoiceAt=0;lastResultAt=Date.now();lastRestartAt=0;lastSpeechStartAt=0;running=true;session++;
   $('start').disabled=true;$('stop').disabled=false;draw();beginRecognition(session);const activeSession=session;watchdog=setInterval(()=>checkRecognition(activeSession),5000);
  }catch(e){status('マイクを開始できません: '+e.message);await stopAll()}
 };
