@@ -1,9 +1,80 @@
 <!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>日本語音声認識テスト</title><style>body{font-family:system-ui,sans-serif;max-width:760px;margin:30px auto;padding:18px;line-height:1.6}button{font-size:18px;padding:12px;margin:5px}#meter{height:22px;background:#ddd;border-radius:10px;overflow:hidden}#level{height:100%;width:0;background:#25a56a;transition:width .08s}textarea{box-sizing:border-box;width:100%;height:260px;font-size:18px}#status{min-height:2em}</style></head><body><h1>日本語音声認識テスト</h1><p>Windows 10 / 11・Chrome用。日本語 (ja-JP) 固定。患者情報は入力しないでください。音声認識処理が外部サービスに送信される場合があります。</p><button id="start">録音開始</button><button id="stop" disabled>停止</button><button id="copy">全文コピー</button><p id="status">待機中</p><label for="meter">マイク入力レベル</label><div id="meter"><div id="level"></div></div><h2>文字起こし</h2><textarea id="output" aria-label="文字起こし結果"></textarea><script>
-const $=id=>document.getElementById(id), SR=window.SpeechRecognition||window.webkitSpeechRecognition;let recognition,stream,ctx,analyser,raf,committed='',running=false;
-function status(s){$('status').textContent=s}async function cleanup(){cancelAnimationFrame(raf);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;if(ctx)await ctx.close();ctx=null;$('level').style.width='0%';$('start').disabled=false;$('stop').disabled=true}
-function meter(){if(!analyser)return;const a=new Uint8Array(analyser.fftSize);analyser.getByteTimeDomainData(a);let s=0;for(const v of a)s+=((v-128)/128)**2;const rms=Math.sqrt(s/a.length);$('level').style.width=Math.min(100,Math.round(rms*350))+'%';raf=requestAnimationFrame(meter)}
-$('start').onclick=async()=>{if(!SR){status('このChromeでは音声認識を利用できません');return}try{stream=await navigator.mediaDevices.getUserMedia({audio:true});ctx=new AudioContext();const src=ctx.createMediaStreamSource(stream);analyser=ctx.createAnalyser();analyser.fftSize=1024;src.connect(analyser);meter();recognition=new SR();recognition.lang='ja-JP';recognition.continuous=true;recognition.interimResults=true;committed=$('output').value;running=true;recognition.onresult=e=>{let interim='';for(let i=e.resultIndex;i<e.results.length;i++){const t=e.results[i][0].transcript;if(e.results[i].isFinal)committed+=t+'\n';else interim+=t}$('output').value=committed+interim};recognition.onerror=e=>status('認識エラー: '+e.error);recognition.onend=()=>{if(running){try{recognition.start()}catch(e){status('再開できません: '+e.message)}}};recognition.start();$('start').disabled=true;$('stop').disabled=false;status('録音・文字起こし中')}catch(e){status('マイクを開始できません: '+e.message);running=false;await cleanup()}};
-$('stop').onclick=async()=>{running=false;if(recognition)recognition.stop();await cleanup();status('停止しました')};
-$('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('output').value);status('コピーしました')}catch(e){status('コピーに失敗しました')}};
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>日本語音声認識テスト</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:850px;margin:24px auto;padding:18px;line-height:1.6;color:#20242b}
+button{font-size:17px;padding:11px;margin:4px;border-radius:8px;border:1px solid #aaa;background:white;cursor:pointer}
+button:disabled{opacity:.45}canvas{width:100%;height:150px;background:#101b2a;border-radius:12px;display:block}
+textarea{box-sizing:border-box;width:100%;height:270px;font-size:18px;padding:12px}
+#status{min-height:2em}#interim{color:#666;min-height:2em;white-space:pre-wrap}
+</style></head><body>
+<h1>日本語音声認識テスト</h1>
+<p>Windows 10 / 11 の Chrome 用。日本語（ja-JP）固定。患者情報は入力しないでください。Chrome の音声認識は外部サービスへ音声を送信する場合があります。</p>
+<button id="start">録音開始</button><button id="stop" disabled>停止</button><button id="copy">全文コピー</button>
+<p id="status" role="status">待機中</p>
+<label for="wave">マイク波形（右から左へスクロール）</label><canvas id="wave" width="900" height="150" aria-label="音声入力のスクロール波形"></canvas>
+<h2>文字起こし</h2><textarea id="output" aria-label="確定した文字起こし結果"></textarea>
+<div id="interim" aria-live="off"></div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let recognition=null,stream=null,ctx=null,analyser=null,raf=0,restartTimer=0;
+let running=false,committed='',interim='',session=0,restarts=0;
+const canvas=$('wave'),g=canvas.getContext('2d'),history=new Float32Array(canvas.width);
+function status(s){$('status').textContent=s}
+function draw(){
+ if(!analyser)return;
+ const data=new Uint8Array(analyser.fftSize);analyser.getByteTimeDomainData(data);
+ let power=0;for(const v of data){const x=(v-128)/128;power+=x*x}
+ const amplitude=Math.min(1,Math.sqrt(power/data.length)*4);
+ history.copyWithin(0,2);history[history.length-2]=amplitude;history[history.length-1]=amplitude;
+ g.fillStyle='#101b2a';g.fillRect(0,0,canvas.width,canvas.height);
+ g.strokeStyle='#51e3bb';g.lineWidth=2;g.beginPath();
+ for(let x=0;x<history.length;x++){const h=history[x]*canvas.height*.45;g.moveTo(x,canvas.height/2-h);g.lineTo(x,canvas.height/2+h)}
+ g.stroke();raf=requestAnimationFrame(draw);
+}
+function appendFinal(t){if(!t)return;committed+=(committed&&!committed.endsWith('\n')?'\n':'')+t.trim()+'\n';$('output').value=committed;$('output').scrollTop=$('output').scrollHeight}
+function scheduleRestart(id){if(!running||id!==session)return;clearTimeout(restartTimer);const delay=Math.min(3000,400*Math.pow(1.5,Math.min(restarts++,5)));restartTimer=setTimeout(()=>{if(running&&id===session)beginRecognition(id)},delay)}
+function beginRecognition(id){
+ if(!running||id!==session)return;
+ const r=new SR();recognition=r;r.lang='ja-JP';r.continuous=true;r.interimResults=true;r.maxAlternatives=1;
+ r.onresult=e=>{
+  if(id!==session||!running)return;
+  let pending='',finals=[];
+  for(let i=e.resultIndex;i<e.results.length;i++){const item=e.results[i],t=item[0].transcript;if(item.isFinal)finals.push(t);else pending+=t}
+  finals.forEach(appendFinal);interim=pending;$('interim').textContent=interim?'認識中: '+interim:'';
+  if(finals.length)restarts=0;
+ };
+ r.onerror=e=>{
+  if(id!==session)return;
+  if(e.error==='not-allowed'||e.error==='service-not-allowed'){status('マイクまたは音声認識の許可がありません');stopAll();return}
+  if(e.error==='audio-capture'){status('マイク入力を確認してください');stopAll();return}
+  if(e.error!=='no-speech'&&e.error!=='aborted')status('認識エラー: '+e.error+'（再接続を試行）');
+ };
+ r.onend=()=>{if(id!==session)return;recognition=null;if(interim){$('interim').textContent='未確定（再認識中）: '+interim;interim=''}scheduleRestart(id)};
+ try{r.start();status('録音中・日本語を認識しています')}catch(e){status('音声認識を再試行中: '+e.message);scheduleRestart(id)}
+}
+async function stopAll(){
+ running=false;session++;clearTimeout(restartTimer);cancelAnimationFrame(raf);
+ if(recognition){const r=recognition;recognition=null;try{r.stop()}catch(e){}}
+ if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
+ if(ctx){const old=ctx;ctx=null;try{await old.close()}catch(e){}}
+ analyser=null;$('start').disabled=false;$('stop').disabled=true;
+ $('interim').textContent=interim?'未確定の音声: '+interim:'';interim='';
+}
+$('start').onclick=async()=>{
+ if(!SR){status('このChromeでは音声認識を利用できません');return}
+ if(running)return;
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+  ctx=new (window.AudioContext||window.webkitAudioContext)();await ctx.resume();
+  analyser=ctx.createAnalyser();analyser.fftSize=2048;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  history.fill(0);committed=$('output').value;interim='';restarts=0;running=true;session++;
+  $('start').disabled=true;$('stop').disabled=false;draw();beginRecognition(session);
+ }catch(e){status('マイクを開始できません: '+e.message);await stopAll()}
+};
+$('stop').onclick=async()=>{await stopAll();status('停止しました')};
+$('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('output').value);status('コピーしました')}catch(e){status('コピーに失敗しました: '+e.message)}};
 </script></body></html>
