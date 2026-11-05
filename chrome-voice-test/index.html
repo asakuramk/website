@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>日本語音声認識テスト v3</title>
+<title>日本語音声認識テスト v4</title>
 <style>
 body{font-family:system-ui,sans-serif;max-width:850px;margin:24px auto;padding:18px;line-height:1.6;color:#20242b}
 button{font-size:17px;padding:11px;margin:4px;border-radius:8px;border:1px solid #aaa;background:white;cursor:pointer}
@@ -8,19 +8,19 @@ button:disabled{opacity:.45}canvas{width:100%;height:150px;background:#101b2a;bo
 textarea{box-sizing:border-box;width:100%;height:270px;font-size:18px;padding:12px}
 #diagnostics{font-size:14px;white-space:pre-wrap;background:#f3f5f7;padding:10px;border-radius:8px}#status{min-height:2em}#interim{color:#666;min-height:2em;white-space:pre-wrap}
 </style></head><body>
-<h1>日本語音声認識テスト <small id="version">v3</small></h1><p>バージョン: v3（波形スクロール・認識自動再開）</p>
+<h1>日本語音声認識テスト <small id="version">v4</small></h1><p>バージョン: v4（波形スクロール・認識監視強化・音声バックアップ）</p>
 <p>Windows 10 / 11 の Chrome 用。日本語（ja-JP）固定。患者情報は入力しないでください。Chrome の音声認識は外部サービスへ音声を送信する場合があります。</p>
-<button id="start">録音開始</button><button id="stop" disabled>停止</button><button id="copy">全文コピー</button>
+<button id="start">録音開始</button><button id="download" disabled>録音音声を保存</button><button id="stop" disabled>停止</button><button id="copy">全文コピー</button>
 <p id="status" role="status">待機中</p><p id="diagnostics" aria-live="off">認識診断: 待機中</p>
 <label for="wave">マイク波形（右から左へスクロール）</label><canvas id="wave" width="900" height="150" aria-label="音声入力のスクロール波形"></canvas>
-<h2>文字起こし</h2><textarea id="output" aria-label="確定した文字起こし結果"></textarea>
+<p>認識が途中で止まっても音声録音は継続します。停止後「録音音声を保存」でバックアップできます。ブラウザ内蔵の認識精度は保証されません。</p><h2>文字起こし</h2><textarea id="output" aria-label="確定した文字起こし結果"></textarea>
 <div id="interim" aria-live="off"></div>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-let recognition=null,stream=null,ctx=null,analyser=null,raf=0,restartTimer=0;
-let running=false,committed='',interim='',session=0,restarts=0,recognizerGeneration=0,lastEventAt=0,lastVoiceAt=0,watchdog=0,voiceLevel=0,finalCount=0,recoveryCount=0,lastError='なし';
+let recognition=null,stream=null,ctx=null,analyser=null,raf=0,restartTimer=0,recorder=null,audioChunks=[],audioBlob=null;
+let running=false,committed='',interim='',session=0,restarts=0,recognizerGeneration=0,lastEventAt=0,lastVoiceAt=0,lastResultAt=0,lastRestartAt=0,watchdog=0,voiceLevel=0,finalCount=0,recoveryCount=0,lastError='なし';
 const canvas=$('wave'),g=canvas.getContext('2d'),history=new Float32Array(canvas.width);
 function status(s){$('status').textContent=s}
 function showDiagnostics(){const elapsed=lastEventAt?Math.round((Date.now()-lastEventAt)/1000)+'秒':'なし';$('diagnostics').textContent='認識診断: '+(running?'稼働中':'停止中')+' / 確定結果 '+finalCount+'件 / 再接続 '+recoveryCount+'回 / 最終イベント '+elapsed+'前 / 最終エラー '+lastError}
@@ -45,7 +45,7 @@ function beginRecognition(id){
  r.onspeechstart=()=>{if(id===session&&generation===recognizerGeneration)lastEventAt=Date.now()};
  r.onresult=e=>{
   if(id!==session||!running||generation!==recognizerGeneration)return;
-  lastEventAt=Date.now();
+  lastEventAt=Date.now();lastResultAt=Date.now();
   let pending='',finals=[];
   for(let i=e.resultIndex;i<e.results.length;i++){const item=e.results[i],t=item[0].transcript;if(item.isFinal)finals.push(t);else pending+=t}
   finals.forEach(appendFinal);interim=pending;$('interim').textContent=interim?'認識中: '+interim:'';
@@ -64,8 +64,8 @@ function beginRecognition(id){
 function checkRecognition(id){
  if(!running||id!==session)return;
  showDiagnostics();
- if(recognition&&Date.now()-lastEventAt>20000&&Date.now()-lastVoiceAt<12000){
-  const stale=recognition;recognition=null;recognizerGeneration++;
+ if(recognition&&Date.now()-lastVoiceAt<6000&&Date.now()-lastVoiceAt>1000&&Date.now()-lastResultAt>12000&&Date.now()-lastRestartAt>12000){
+  lastRestartAt=Date.now();const stale=recognition;recognition=null;recognizerGeneration++;
   status('音声認識の応答がありません。再接続中…');
   try{stale.abort()}catch(e){}
   scheduleRestart(id);
@@ -74,6 +74,7 @@ function checkRecognition(id){
 async function stopAll(){
  running=false;session++;recognizerGeneration++;clearTimeout(restartTimer);clearInterval(watchdog);watchdog=0;cancelAnimationFrame(raf);
  if(recognition){const r=recognition;recognition=null;try{r.stop()}catch(e){}}
+ if(recorder&&recorder.state!=='inactive'){try{recorder.stop()}catch(e){}}recorder=null;
  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
  if(ctx){const old=ctx;ctx=null;try{await old.close()}catch(e){}}
  analyser=null;showDiagnostics();$('start').disabled=false;$('stop').disabled=true;
@@ -87,10 +88,13 @@ $('start').onclick=async()=>{
   ctx=new (window.AudioContext||window.webkitAudioContext)();await ctx.resume();
   analyser=ctx.createAnalyser();analyser.fftSize=2048;
   ctx.createMediaStreamSource(stream).connect(analyser);
-  history.fill(0);committed=$('output').value;interim='';restarts=0;finalCount=0;recoveryCount=0;lastError='なし';lastVoiceAt=0;running=true;session++;
+  audioChunks=[];audioBlob=null;$('download').disabled=true;
+  if(window.MediaRecorder){const format=['audio/webm;codecs=opus','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t));recorder=new MediaRecorder(stream,format?{mimeType:format}:undefined);recorder.ondataavailable=e=>{if(e.data.size)audioChunks.push(e.data)};recorder.onstop=()=>{audioBlob=new Blob(audioChunks,{type:recorder?.mimeType||'audio/webm'});$('download').disabled=!audioBlob.size};recorder.start(1000)}
+  history.fill(0);committed=$('output').value;interim='';restarts=0;finalCount=0;recoveryCount=0;lastError='なし';lastVoiceAt=0;lastResultAt=Date.now();lastRestartAt=0;running=true;session++;
   $('start').disabled=true;$('stop').disabled=false;draw();beginRecognition(session);const activeSession=session;watchdog=setInterval(()=>checkRecognition(activeSession),5000);
  }catch(e){status('マイクを開始できません: '+e.message);await stopAll()}
 };
 $('stop').onclick=async()=>{await stopAll();status('停止しました')};
+$('download').onclick=()=>{if(!audioBlob)return;const url=URL.createObjectURL(audioBlob);const a=document.createElement('a');a.href=url;a.download='chrome-voice-test-'+new Date().toISOString().replace(/[:.]/g,'-')+'.webm';a.click();setTimeout(()=>URL.revokeObjectURL(url),30000)};
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('output').value);status('コピーしました')}catch(e){status('コピーに失敗しました: '+e.message)}};
 </script></body></html>
