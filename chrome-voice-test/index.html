@@ -4,7 +4,7 @@
 <style>
 body{font-family:system-ui,sans-serif;max-width:850px;margin:24px auto;padding:18px;line-height:1.6;color:#20242b}
 button{font-size:17px;padding:11px;margin:4px;border-radius:8px;border:1px solid #aaa;background:white;cursor:pointer}
-button:disabled{opacity:.45}button{touch-action:manipulation}textarea{font-size:16px}canvas{width:100%;height:150px;background:#101b2a;border-radius:12px;display:block}
+button:disabled{opacity:.45}button{touch-action:manipulation}button{touch-action:manipulation}textarea{font-size:16px}canvas{width:100%;height:150px;background:#101b2a;border-radius:12px;display:block}
 textarea{box-sizing:border-box;width:100%;height:270px;font-size:18px;padding:12px}
 #diagnostics{font-size:14px;white-space:pre-wrap;background:#f3f5f7;padding:10px;border-radius:8px}#status{min-height:2em}#interim{color:#666;min-height:2em;white-space:pre-wrap}
 </style></head><body>
@@ -19,6 +19,7 @@ textarea{box-sizing:border-box;width:100%;height:270px;font-size:18px;padding:12
 'use strict';
 const $=id=>document.getElementById(id);
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const isiOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 let recognition=null,stream=null,ctx=null,analyser=null,raf=0,restartTimer=0,recorder=null,audioChunks=[],audioBlob=null;
 let running=false,committed='',interim='',session=0,restarts=0,recognizerGeneration=0,lastEventAt=0,lastVoiceAt=0,lastResultAt=0,lastRestartAt=0,recognitionStartedAt=0,lastSpeechStartAt=0,watchdog=0,voiceLevel=0,finalCount=0,recoveryCount=0,lastError='なし',recordingType='';
 const canvas=$('wave'),g=canvas.getContext('2d'),history=new Float32Array(canvas.width);
@@ -45,7 +46,7 @@ function scheduleRestart(id){if(!running||id!==session)return;recoveryCount++;sh
 function beginRecognition(id){
  if(!running||id!==session)return;
  const r=new SR();recognition=r;const generation=++recognizerGeneration;lastEventAt=Date.now();recognitionStartedAt=Date.now();lastResultAt=Date.now();r.lang='ja-JP';r.continuous=!needsIOSRestart;r.interimResults=true;r.maxAlternatives=1;
- r.onstart=()=>{if(id===session&&generation===recognizerGeneration){lastEventAt=Date.now();status('録音中・日本語を認識しています')}};
+ r.onstart=()=>{if(id===session&&generation===recognizerGeneration){lastEventAt=Date.now();status('日本語を認識中（'+(isiOS?'iOS':'ブラウザ')+'）')}};
  r.onspeechstart=()=>{if(id===session&&generation===recognizerGeneration){lastEventAt=Date.now();lastSpeechStartAt=Date.now()}};
  r.onresult=e=>{
   if(id!==session||!running||generation!==recognizerGeneration)return;
@@ -90,7 +91,7 @@ async function stopAll(){
  $('interim').textContent=interim?'未確定の音声: '+interim:'';interim='';
 }
 $('start').onclick=async()=>{
- if(!SR){status('このChromeでは音声認識を利用できません');return}
+ if(!SR){status('このブラウザでは音声認識APIを利用できません。iPhoneはSafari、MacはChromeまたはSafariの最新版を試してください。');return}
  if(running)return;
  try{
   stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
